@@ -41,7 +41,15 @@ extension MultipartFormData {
     private static func namedParts(from data: MultipartFormData, path: String? = nil) -> [MultipartPart] {
         switch data {
         case .array(let array):
-            return array.flatMap { namedParts(from: $0, path: path.map { "\($0)[]" }) }
+            return array.enumerated().flatMap { i, part in
+                namedParts(from: part,
+                           path: {
+                            if case .keyed = part {
+                                return path.map { "\($0)[\(i)]" }
+                            }
+                            return path.map { "\($0)[]" }
+                           }())
+            }
         case .single(var part):
             part.name = path
             return [part]
@@ -58,7 +66,9 @@ private extension MultipartFormData {
         self = insertPart(part, at: path, remainingNestingLevels: remainingNestingLevels)
     }
 
-    func insertPart(_ part: MultipartPart, at path: ArraySlice<Substring>, remainingNestingLevels: Int) -> MultipartFormData {
+    func insertPart(_ part: MultipartPart,
+                    at path: ArraySlice<Substring>,
+                    remainingNestingLevels: Int) -> MultipartFormData {
         guard remainingNestingLevels > 0 else {
             return self
         }
@@ -66,8 +76,28 @@ private extension MultipartFormData {
         case .none:
             return .single(part)
         case "":
-            return .array((array ?? []) + [MultipartFormData.empty.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+            switch path.dropFirst().first {
+            case .none, "":
+                return .array((array ?? []) + [MultipartFormData.empty.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+            case let .some(head):
+                if array == nil || (array!.last!.dictionary!.keys.contains(String(head)) && path.count == 2) {
+                    return .array((array ?? []) + [MultipartFormData.empty.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+                } else {
+                    return .array(array!.dropLast() + [array!.last!.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+                }
+            }
+            
         case let .some(head):
+            /// added for nested array indices
+            if let index = Int(head) {
+                if array == nil {
+                    return .array([MultipartFormData.empty.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+                }
+                return .array(index > array!.count - 1 ?
+                                array! + [MultipartFormData.empty.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)]
+                                : array!.dropLast() + [array!.last!.insertPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)])
+            }
+            /// for obj keys.
             var dictionary = self.dictionary ?? [:]
             dictionary[String(head), default: .empty].insertingPart(part, at: path.dropFirst(), remainingNestingLevels: remainingNestingLevels - 1)
             return .keyed(dictionary)
